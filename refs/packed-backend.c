@@ -1769,6 +1769,29 @@ static struct ref_iterator *packed_reflog_iterator_begin(struct ref_store *ref_s
 	return empty_ref_iterator_begin();
 }
 
+struct fsck_packed_ref_entry {
+	int line_number;
+
+	int has_peeled;
+	struct object_id oid;
+	struct object_id peeled;
+};
+
+static struct fsck_packed_ref_entry *create_fsck_packed_ref_entry(int line_number)
+{
+	struct fsck_packed_ref_entry *entry = xcalloc(1, sizeof(*entry));
+	entry->line_number = line_number;
+	entry->has_peeled = 0;
+	return entry;
+}
+
+static void free_fsck_packed_ref_entries(struct fsck_packed_ref_entry **entries, int nr)
+{
+	for (int i = 0; i < nr; i++)
+		free(entries[i]);
+	free(entries);
+}
+
 static int packed_fsck_ref_next_line(struct fsck_options *o,
 				     int line_number, const char *start,
 				     const char *eof, const char **eol)
@@ -1824,20 +1847,20 @@ static int packed_fsck_ref_header(struct fsck_options *o, const char *start, con
 }
 
 static int packed_fsck_ref_peeled_line(struct fsck_options *o,
-				       struct ref_store *ref_store, int line_number,
+				       struct ref_store *ref_store,
+				       struct fsck_packed_ref_entry *entry,
 				       const char *start, const char *eol)
 {
 	struct strbuf peeled_entry = STRBUF_INIT;
 	struct fsck_ref_report report = { 0 };
-	struct object_id peeled;
 	const char *p;
 	int ret = 0;
 
-	strbuf_addf(&peeled_entry, "packed-refs line %d", line_number);
+	strbuf_addf(&peeled_entry, "packed-refs line %d", entry->line_number + 1);
 	report.path = peeled_entry.buf;
 
 	start++;
-	if (parse_oid_hex_algop(start, &peeled, &p, ref_store->repo->hash_algo)) {
+	if (parse_oid_hex_algop(start, &entry->peeled, &p, ref_store->repo->hash_algo)) {
 		ret |= fsck_report_ref(o, &report,
 				       FSCK_MSG_BAD_PACKED_REF_ENTRY,
 				       "'%.*s' has invalid peeled oid",
@@ -1859,20 +1882,20 @@ cleanup:
 }
 
 static int packed_fsck_ref_main_line(struct fsck_options *o,
-				     struct ref_store *ref_store, int line_number,
+				     struct ref_store *ref_store,
+				     struct fsck_packed_ref_entry *entry,
 				     const char *start, const char *eol)
 {
 	struct strbuf packed_entry = STRBUF_INIT;
 	struct fsck_ref_report report = { 0 };
 	struct strbuf refname = STRBUF_INIT;
-	struct object_id oid;
 	const char *p;
 	int ret = 0;
 
-	strbuf_addf(&packed_entry, "packed-refs line %d", line_number);
+	strbuf_addf(&packed_entry, "packed-refs line %d", entry->line_number);
 	report.path = packed_entry.buf;
 
-	if (parse_oid_hex_algop(start, &oid, &p, ref_store->repo->hash_algo)) {
+	if (parse_oid_hex_algop(start, &entry->oid, &p, ref_store->repo->hash_algo)) {
 		ret |= fsck_report_ref(o, &report,
 				       FSCK_MSG_BAD_PACKED_REF_ENTRY,
 				       "'%.*s' has invalid oid",
@@ -1884,7 +1907,7 @@ static int packed_fsck_ref_main_line(struct fsck_options *o,
 		ret |= fsck_report_ref(o, &report,
 				       FSCK_MSG_BAD_PACKED_REF_ENTRY,
 				       "has no space after oid '%s' but with '%.*s'",
-				       oid_to_hex(&oid), (int)(eol - p), p);
+				       oid_to_hex(&entry->oid), (int)(eol - p), p);
 		goto cleanup;
 	}
 
@@ -1915,7 +1938,10 @@ static int packed_fsck_ref_content(struct fsck_options *o,
 				   struct ref_store *ref_store,
 				   const char *start, const char *eof)
 {
+	struct fsck_packed_ref_entry **entries;
+	int entry_alloc = 20;
 	int line_number = 1;
+	int entry_nr = 0;
 	const char *eol;
 	int ret = 0;
 
@@ -1934,14 +1960,21 @@ static int packed_fsck_ref_content(struct fsck_options *o,
 				       "missing header line");
 	}
 
+	ALLOC_ARRAY(entries, entry_alloc);
 	while (start < eof) {
+		struct fsck_packed_ref_entry *entry
+			= create_fsck_packed_ref_entry(line_number);
+		ALLOC_GROW(entries, entry_nr + 1, entry_alloc);
+		entries[entry_nr++] = entry;
+
 		ret |= packed_fsck_ref_next_line(o, line_number, start, eof, &eol);
-		ret |= packed_fsck_ref_main_line(o, ref_store, line_number, start, eol);
+		ret |= packed_fsck_ref_main_line(o, ref_store, entry, start, eol);
 		start = eol + 1;
 		line_number++;
 		if (start < eof && *start == '^') {
+			entry->has_peeled = 1;
 			ret |= packed_fsck_ref_next_line(o, line_number, start, eof, &eol);
-			ret |= packed_fsck_ref_peeled_line(o, ref_store, line_number,
+			ret |= packed_fsck_ref_peeled_line(o, ref_store, entry,
 							   start, eol);
 			start = eol + 1;
 			line_number++;
@@ -1956,6 +1989,7 @@ static int packed_fsck_ref_content(struct fsck_options *o,
 		o->safe_object_check = 0;
 
 
+	free_fsck_packed_ref_entries(entries, entry_nr);
 	return ret;
 }
 
