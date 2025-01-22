@@ -311,8 +311,8 @@ static void warn_about_deprecated_remote_type(const char *type,
 		  "\n"
 		  "\tgit remote rename %s %s\n"
 		  "\n"
-		  "If you cannot, please let us know you still use it by sending an\n"
-		  "e-mail to <git@vger.kernel.org>."),
+		  "If you cannot, please let us know why you still need to use it by\n"
+		  "sending an e-mail to <git@vger.kernel.org>."),
 		type, remote->name, remote->name, remote->name);
 }
 
